@@ -266,6 +266,8 @@ def log_training_progress(stats_dict, params_dict, epoch, steps_completed, total
 
 def log_activation_sparsity(epoch, loggers, collector):
     """Log information about the sparsity of the activations"""
+    if collector is None:
+        return
     for logger in loggers:
         logger.log_activation_sparsity(collector.value(), epoch)
 
