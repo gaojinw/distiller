@@ -229,6 +229,18 @@ def density_rows(tensor):
     return 1 - sparsity_rows(tensor)
 
 
+def norm_filters(weights, p=1):
+    """Compute the p-norm of convolution filters.
+
+    Args:
+        weights - a 4D convolution weights tensor.
+                  Has shape = (#filters, #channels, k_w, k_h)
+        p - the exponent value in the norm formulation
+    """
+    assert weights.dim() == 4
+    return weights.view(weights.size(0), -1).norm(p=p, dim=1)
+
+
 def model_numel(model, param_dims=[2, 4]):
     """Count the number elements in a model's parameter tensors"""
     total_numel = 0
@@ -237,6 +249,28 @@ def model_numel(model, param_dims=[2, 4]):
         if param.dim() in param_dims and any(type in name for type in ['weight', 'bias']):
             total_numel += torch.numel(param)
     return total_numel
+
+
+def activation_channels_l1(activation):
+    """Calculate the L1-norms of an activation's channels.
+
+    The activation usually has the shape: (batch_size, num_channels, h, w)
+
+    When the activations are computed on a distributed GPU system, different parts of the
+    activation tensor might be computed by a differnt GPU. If this function is called from
+    the forward-callback of some activation module in the graph, we will only witness part
+    of the batch.  For example, if the batch_size is 256, and we are using 4 GPUS, instead
+    of seeing activations with shape = (256, num_channels, h, w), we may see 4 calls with
+    shape = (64, num_channels, h, w).
+
+    Since we want to calculate the L1-norm of all the channels of the activation, we
+    need to move the partial sums results to the CPU, where they will be added together.
+    """
+    view_2d = activation.view(-1, activation.size(2) * activation.size(3))  # (batch*channel) x (h*w)
+    featuremap_norms = view_2d.norm(p=1, dim=1)
+    featuremap_norms_mat = featuremap_norms.view(activation.size(0), activation.size(1))
+    # We need to move the results back to the CPU
+    return featuremap_norms_mat.sum(dim=0).cpu()
 
 
 def log_training_progress(stats_dict, params_dict, epoch, steps_completed, total_steps, log_freq, loggers):
@@ -264,12 +298,12 @@ def log_training_progress(stats_dict, params_dict, epoch, steps_completed, total
         logger.log_weights_distribution(params_dict, steps_completed)
 
 
-def log_activation_sparsity(epoch, loggers, collector):
+def log_activation_sparsity(epoch, phase, loggers, collector):
     """Log information about the sparsity of the activations"""
     if collector is None:
         return
     for logger in loggers:
-        logger.log_activation_sparsity(collector.value(), epoch)
+        logger.log_activation_sparsity(phase, collector.value(), epoch)
 
 
 def log_weights_sparsity(model, epoch, loggers):
