@@ -56,6 +56,20 @@ def pretty_int(i):
     return "{:,}".format(i)
 
 
+def assign_layer_names(container, name=None):
+    """Assign human-readable names to the modules (layers).
+
+    Sometimes we need to access modules by their names, and we'd like to use
+    fully-qualified names for convinience.
+    """
+    is_leaf = True
+    for key, module in container._modules.items():
+        is_leaf = False
+        assign_names(module, ".".join([name, key]) if name is not None else key)
+    if is_leaf:
+        container.distiller_name = name
+
+
 def normalize_module_name(layer_name):
     """Normalize a module's name.
 
