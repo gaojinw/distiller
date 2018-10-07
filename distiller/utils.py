@@ -261,7 +261,7 @@ def model_numel(model, param_dims=[2, 4]):
 def activation_channels_l1(activation):
     """Calculate the L1-norms of an activation's channels.
 
-    The activation usually has the shape: (batch_size, num_channels, h, w)
+    The activation usually has the shape: (batch_size, num_channels, h, w).
 
     When the activations are computed on a distributed GPU system, different parts of the
     activation tensor might be computed by a differnt GPU. If this function is called from
@@ -270,14 +270,36 @@ def activation_channels_l1(activation):
     of seeing activations with shape = (256, num_channels, h, w), we may see 4 calls with
     shape = (64, num_channels, h, w).
 
-    Since we want to calculate the L1-norm of all the channels of the activation, we
-    need to move the partial sums results to the CPU, where they will be added together.
+    Since we want to calculate the average of the L1-norm of each of the channels of the
+    activation, we need to move the partial sums results to the CPU, where they will be
+    added together.
+
+    Returns - for each channel: the batch-mean of its L1 magnitudes (i.e. over all of the
+    activations in the mini-batch, compute the mean of the L! magnitude of each channel).
     """
     view_2d = activation.view(-1, activation.size(2) * activation.size(3))  # (batch*channel) x (h*w)
     featuremap_norms = view_2d.norm(p=1, dim=1)
-    featuremap_norms_mat = featuremap_norms.view(activation.size(0), activation.size(1))
+    featuremap_norms_mat = featuremap_norms.view(activation.size(0), activation.size(1))  # batch x channel
     # We need to move the results back to the CPU
-    return featuremap_norms_mat.sum(dim=0).cpu()
+    return featuremap_norms_mat.mean(dim=0).cpu()
+
+
+def activation_channels_means(activation):
+    """Calculate the mean of each of an activation's channels.
+
+    The activation usually has the shape: (batch_size, num_channels, h, w).
+
+    "We first use global average pooling to convert the output of layer i, which is a
+    c x h x w tensor, into a 1 x c vector."
+
+    Returns - for each channel: the batch-mean of its L1 magnitudes (i.e. over all of the
+    activations in the mini-batch, compute the mean of the L! magnitude of each channel).
+    """
+    view_2d = activation.view(-1, activation.size(2) * activation.size(3))  # (batch*channel) x (h*w)
+    featuremap_means = view_2d.mean(dim=1)  # global average pooling
+    featuremap_means_mat = featuremap_means.view(activation.size(0), activation.size(1))  # batch x channel
+    # We need to move the results back to the CPU
+    return featuremap_means_mat.mean(dim=0).cpu()
 
 
 def log_training_progress(stats_dict, params_dict, epoch, steps_completed, total_steps, log_freq, loggers):
