@@ -57,7 +57,7 @@ import os
 import sys
 import random
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import partial
 import numpy as np
 import torch
@@ -75,7 +75,7 @@ except ImportError:
     sys.path.append(module_path)
     import distiller
 import apputils
-from distiller.data_loggers import TensorBoardLogger, PythonLogger, ActivationSparsityCollector
+from distiller.data_loggers import *
 import distiller.quantization as quantization
 from models import ALL_MODEL_NAMES, create_model
 
@@ -118,8 +118,10 @@ parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
-parser.add_argument('--act-stats', dest='activation_stats', action='store_true', default=False,
+parser.add_argument('--act-stats', dest='activation_stats', choices=["train", "valid", "test"], default=None,
                     help='collect activation statistics (WARNING: this slows down training)')
+parser.add_argument('--masks-sparsity', dest='masks_sparsity', action='store_true', default=False,
+                    help='print masks sparsity table at end of each epoch')
 parser.add_argument('--param-hist', dest='log_params_histograms', action='store_true', default=False,
                     help='log the paramter tensors histograms to file (WARNING: this can use significant disk space)')
 SUMMARY_CHOICES = ['sparsity', 'compute', 'model', 'modules', 'png', 'png_w_params', 'onnx']
@@ -134,8 +136,6 @@ parser.add_argument('--extras', default=None, type=str,
                     help='file with extra configuration information')
 parser.add_argument('--deterministic', '--det', action='store_true',
                     help='Ensure deterministic execution for re-producible results.')
-parser.add_argument('--quantize', action='store_true',
-                    help='Apply 8-bit quantization to model before evaluation')
 parser.add_argument('--gpus', metavar='DEV_ID', default=None,
                     help='Comma-separated list of GPU device IDs to be used (default is to use all available devices)')
 parser.add_argument('--name', '-n', metavar='NAME', default=None, help='Experiment name')
@@ -150,8 +150,30 @@ parser.add_argument('--earlyexit_lossweights', type=float, nargs='*', dest='earl
                     help='List of loss weights for early exits (e.g. --lossweights 0.1 0.3)')
 parser.add_argument('--earlyexit_thresholds', type=float, nargs='*', dest='earlyexit_thresholds', default=None,
                     help='List of EarlyExit thresholds (e.g. --earlyexit 1.2 0.9)')
+parser.add_argument('--num-best-scores', dest='num_best_scores', default=1, type=int,
+                    help='number of best scores to track and report (default: 1)')
+parser.add_argument('--load-serialized', dest='load_serialized', action='store_true', default=False,
+                    help='Load a model without DataParallel wrapping it')
+                    
+quant_group = parser.add_argument_group('Arguments controlling quantization at evaluation time'
+                                        '("post-training quantization)')
+quant_group.add_argument('--quantize-eval', '--qe', action='store_true',
+                         help='Apply linear-symmetric quantization to model before evaluation. Applicable only if'
+                              '--evaluate is also set')
+quant_group.add_argument('--qe-bits-acts', '--qeba', type=int, default=8, metavar='NUM_BITS',
+                         help='Number of bits for quantization of activations')
+quant_group.add_argument('--qe-bits-wts', '--qebw', type=int, default=8, metavar='NUM_BITS',
+                         help='Number of bits for quantization of weights')
+quant_group.add_argument('--qe-bits-accum', type=int, default=32, metavar='NUM_BITS',
+                         help='Number of bits for quantization of the accumulator')
+quant_group.add_argument('--qe-clip-acts', '--qeca', action='store_true',
+                         help='Enable clipping of activations using max-abs-value averaging over batch')
+quant_group.add_argument('--qe-no-clip-layers', '--qencl', type=str, nargs='+', metavar='LAYER_NAME', default=[],
+                         help='List of fully-qualified layer names for which not to clip activations. Applicable'
+                              'only if --qe-clip-acts is also set')
 
 distiller.knowledge_distillation.add_distillation_args(parser, ALL_MODEL_NAMES, True)
+
 
 def check_pytorch_version():
     if torch.__version__ < '0.4.0':
@@ -164,6 +186,48 @@ def check_pytorch_version():
               "  2. Install the new environment\n"
               "  3. Activate the new environment")
         exit(1)
+
+
+def create_activation_stats_collectors(model, collection_phase):
+    """Create objects that collect activation statistics.
+
+    This is a utility function that creates two collectors:
+    1. Fine-grade sparsity levels of the activations
+    2. L1-magnitude of each of the activation channels
+
+    Args:
+        model - the model on which we want to collect statistics
+        phase - the statistics collection phase which is either "train" (for training),
+                or "valid" (for validation)
+
+    WARNING! Enabling activation statsitics collection will significantly slow down training!
+    """
+    class missingdict(dict):
+        """This is a little trick to prevent KeyError"""
+        def __missing__(self, key):
+            return None  # note, does *not* set self[key] - we don't want defaultdict's behavior
+
+    distiller.utils.assign_layer_fq_names(model)
+
+    activations_collectors = {"train": missingdict(), "valid": missingdict(), "test": missingdict()}
+    if collection_phase is None:
+        return activations_collectors
+    collectors = missingdict()
+    collectors["sparsity"] = SummaryActivationStatsCollector(model, "sparsity", distiller.utils.sparsity)
+    collectors["l1_channels"] = SummaryActivationStatsCollector(model, "l1_channels",
+                                                                distiller.utils.activation_channels_l1)
+    collectors["apoz_channels"] = SummaryActivationStatsCollector(model, "apoz_channels",
+                                                                  distiller.utils.activation_channels_apoz)
+    collectors["records"] = RecordsActivationStatsCollector(model, classes=[torch.nn.Conv2d])
+    activations_collectors[collection_phase] = collectors
+    return activations_collectors
+
+
+def save_collectors_data(collectors, directory):
+    """Utility function that saves all activation statistics to Excel workbooks
+    """
+    for name, collector in collectors.items():
+        collector.to_xlsx(os.path.join(directory, name))
 
 
 def main():
@@ -180,8 +244,8 @@ def main():
     msglogger.debug("Distiller: %s", distiller.__version__)
 
     start_epoch = 0
-    best_top1 = 0
-    best_epoch = 0
+    best_epochs = [distiller.MutableNamedTuple({'epoch': 0, 'top1': 0, 'sparsity': 0})
+                   for i in range(args.num_best_scores)]
 
     if args.deterministic:
         # Experiment reproducibility is sometimes important.  Pete Warden expounded about this
@@ -227,7 +291,8 @@ def main():
         args.exiterrors = []
 
     # Create the model
-    model = create_model(args.pretrained, args.dataset, args.arch, device_ids=args.gpus)
+    model = create_model(args.pretrained, args.dataset, args.arch,
+                         parallel=not args.load_serialized, device_ids=args.gpus)
     compression_scheduler = None
     # Create a couple of logging backends.  TensorBoardLogger writes log files in a format
     # that can be read by Google's Tensor Board.  PythonLogger writes to the Python logger.
@@ -267,18 +332,13 @@ def main():
     msglogger.info('Dataset sizes:\n\ttraining=%d\n\tvalidation=%d\n\ttest=%d',
                    len(train_loader.sampler), len(val_loader.sampler), len(test_loader.sampler))
 
-    activations_sparsity = None
-    if args.activation_stats:
-        # If your model has ReLU layers, then those layers have sparse activations.
-        # ActivationSparsityCollector will collect information about this sparsity.
-        # WARNING! Enabling activation sparsity collection will significantly slow down training!
-        activations_sparsity = ActivationSparsityCollector(model)
+    activations_collectors = create_activation_stats_collectors(model, collection_phase=args.activation_stats)
 
     if args.sensitivity is not None:
         return sensitivity_analysis(model, criterion, test_loader, pylogger, args)
 
     if args.evaluate:
-        return evaluate_model(model, criterion, test_loader, pylogger, args)
+        return evaluate_model(model, criterion, test_loader, pylogger, activations_collectors, args)
 
     if args.compress:
         # The main use-case for this sample application is CNN compression. Compression
@@ -313,15 +373,22 @@ def main():
             compression_scheduler.on_epoch_begin(epoch)
 
         # Train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, compression_scheduler,
-              loggers=[tflogger, pylogger], args=args)
-        distiller.log_weights_sparsity(model, epoch, loggers=[tflogger, pylogger])
-        if args.activation_stats:
-            distiller.log_activation_sparsity(epoch, loggers=[tflogger, pylogger],
-                                              collector=activations_sparsity)
+        with collectors_context(activations_collectors["train"]) as collectors:
+            train(train_loader, model, criterion, optimizer, epoch, compression_scheduler,
+                  loggers=[tflogger, pylogger], args=args)
+            distiller.log_weights_sparsity(model, epoch, loggers=[tflogger, pylogger])
+            distiller.log_activation_statsitics(epoch, "train", loggers=[tflogger],
+                                                collector=collectors["sparsity"])
+            if args.masks_sparsity:
+                msglogger.info(distiller.masks_sparsity_tbl_summary(model, compression_scheduler))
 
         # evaluate on validation set
-        top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch)
+        with collectors_context(activations_collectors["valid"]) as collectors:
+            top1, top5, vloss = validate(val_loader, model, criterion, [pylogger], args, epoch)
+            distiller.log_activation_statsitics(epoch, "valid", loggers=[tflogger],
+                                                collector=collectors["sparsity"])
+            save_collectors_data(collectors, msglogger.logdir)
+
         stats = ('Peformance/Validation/',
                  OrderedDict([('Loss', vloss),
                               ('Top1', top1),
@@ -333,16 +400,21 @@ def main():
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
         # remember best top1 and save checkpoint
-        is_best = top1 > best_top1
+        #sparsity = distiller.model_sparsity(model)
+        is_best = top1 > best_epochs[0].top1
         if is_best:
-            best_epoch = epoch
-            best_top1 = top1
-        msglogger.info('==> Best Top1: %.3f   On Epoch: %d\n', best_top1, best_epoch)
-        apputils.save_checkpoint(epoch, args.arch, model, optimizer, compression_scheduler, best_top1, is_best,
-                                 args.name, msglogger.logdir)
+            best_epochs[0].epoch = epoch
+            best_epochs[0].top1 = top1
+            #best_epoch.sparsity = sparsity
+            best_epochs = sorted(best_epochs, key=lambda score: score.top1)
+        for score in reversed(best_epochs):
+            if score.top1 > 0:
+                msglogger.info('==> Best Top1: %.3f on Epoch: %d', score.top1, score.epoch)
+        apputils.save_checkpoint(epoch, args.arch, model, optimizer, compression_scheduler,
+                                 best_epochs[0].top1, is_best, args.name, msglogger.logdir)
 
     # Finally run results on the test set
-    test(test_loader, model, criterion, [pylogger], args=args)
+    test(test_loader, model, criterion, [pylogger], activations_collectors, args=args)
 
 
 OVERALL_LOSS_KEY = 'Overall Loss'
@@ -460,10 +532,14 @@ def validate(val_loader, model, criterion, loggers, args, epoch=-1):
     return _validate(val_loader, model, criterion, loggers, args, epoch)
 
 
-def test(test_loader, model, criterion, loggers, args):
+def test(test_loader, model, criterion, loggers, activations_collectors, args):
     """Model Test"""
     msglogger.info('--- test ---------------------')
-    return _validate(test_loader, model, criterion, loggers, args)
+
+    with collectors_context(activations_collectors["test"]) as collectors:
+        top1, top5, lossses = _validate(test_loader, model, criterion, loggers, args)
+        distiller.log_activation_statsitics(-1, "test", loggers, collector=collectors['sparsity'])
+    return top1, top5, lossses
 
 
 def _validate(data_loader, model, criterion, loggers, args, epoch=-1):
@@ -507,8 +583,6 @@ def _validate(data_loader, model, criterion, loggers, args, epoch=-1):
                 if args.display_confusion:
                     confusion.add(output.data, target)
             else:
-                # If using Early Exit, then compute outputs at all exits - output is now a list of all exits
-                # from exit0 through exitN (i.e. [exit0, exit1, ... exitN])
                 earlyexit_validate_loss(output, target, criterion, args)
 
             # measure elapsed time
@@ -548,24 +622,8 @@ def _validate(data_loader, model, criterion, loggers, args, epoch=-1):
             msglogger.info('==> Confusion:\n%s\n', str(confusion.value()))
         return classerr.value(1), classerr.value(5), losses['objective_loss'].mean
     else:
-        # Print some interesting summary stats for number of data points that could exit early
-        top1k_stats = [0] * args.num_exits
-        top5k_stats = [0] * args.num_exits
-        losses_exits_stats = [0] * args.num_exits
-        sum_exit_stats = 0
-        for exitnum in range(args.num_exits):
-            if args.exit_taken[exitnum]:
-                sum_exit_stats += args.exit_taken[exitnum]
-                msglogger.info("Exit %d: %d", exitnum, args.exit_taken[exitnum])
-                top1k_stats[exitnum] += args.exiterrors[exitnum].value(1)
-                top5k_stats[exitnum] += args.exiterrors[exitnum].value(5)
-                losses_exits_stats[exitnum] += args.losses_exits[exitnum].mean
-        for exitnum in range(args.num_exits):
-            if args.exit_taken[exitnum]:
-                msglogger.info("Percent Early Exit %d: %.3f", exitnum,
-                               (args.exit_taken[exitnum]*100.0) / sum_exit_stats)
-
-        return top1k_stats[args.num_exits-1], top5k_stats[args.num_exits-1], losses_exits_stats[args.num_exits-1]
+        total_top1, total_top5, losses_exits_stats = earlyexit_validate_stats(args)
+        return total_top1, total_top5, losses_exits_stats[args.num_exits-1]
 
 
 def earlyexit_loss(output, target, criterion, args):
@@ -582,31 +640,63 @@ def earlyexit_loss(output, target, criterion, args):
 
 
 def earlyexit_validate_loss(output, target, criterion, args):
-    for exitnum in range(args.num_exits):
-        args.loss_exits[exitnum] = criterion(output[exitnum], target)
-        args.losses_exits[exitnum].add(args.loss_exits[exitnum].item())
-
-    # We need to go through this batch itself - this is now a vector of losses through the batch.
-    # Collecting stats on which exit early can be done across the batch at this time.
-    # Note that we can't use batch_size as last batch might be smaller
+    # We need to go through each sample in the batch itself - in other words, we are
+    # not doing batch processing for exit criteria - we do this as though it were batchsize of 1
+    # but with a grouping of samples equal to the batch size.
+    # Note that final group might not be a full batch - so determine actual size.
     this_batch_size = target.size()[0]
-    for batchnum in range(this_batch_size):
+    earlyexit_validate_criterion = nn.CrossEntropyLoss(reduction='none').cuda()
+    for exitnum in range(args.num_exits):
+        # calculate losses at each sample separately in the minibatch.
+        args.loss_exits[exitnum] = earlyexit_validate_criterion(output[exitnum], target)
+        # for batch_size > 1, we need to reduce this down to an average over the batch
+        args.losses_exits[exitnum].add(torch.mean(args.loss_exits[exitnum]))
+
+    for batch_index in range(this_batch_size):
+        earlyexit_taken = False
         # take the exit using CrossEntropyLoss as confidence measure (lower is more confident)
-        for exitnum in range(args.num_exits-1):
-            if args.loss_exits[exitnum].item() < args.earlyexit_thresholds[exitnum]:
+        for exitnum in range(args.num_exits - 1):
+            if args.loss_exits[exitnum][batch_index] < args.earlyexit_thresholds[exitnum]:
                 # take the results from early exit since lower than threshold
-                args.exiterrors[exitnum].add(torch.tensor(np.array(output[exitnum].data[batchnum], ndmin=2)),
-                        torch.full([1], target[batchnum], dtype=torch.long))
+                args.exiterrors[exitnum].add(torch.tensor(np.array(output[exitnum].data[batch_index], ndmin=2)),
+                        torch.full([1], target[batch_index], dtype=torch.long))
                 args.exit_taken[exitnum] += 1
-            else:
-                # skip the early exits and include results from end of net
-                args.exiterrors[args.num_exits-1].add(torch.tensor(np.array(output[args.num_exits-1].data[batchnum],
-                                                                            ndmin=2)),
-                        torch.full([1], target[batchnum], dtype=torch.long))
-                args.exit_taken[args.num_exits-1] += 1
+                earlyexit_taken = True
+                break                    # since exit was taken, do not affect the stats of subsequent exits
+        # this sample does not exit early and therefore continues until final exit
+        if not earlyexit_taken:
+            exitnum = args.num_exits - 1
+            args.exiterrors[exitnum].add(torch.tensor(np.array(output[exitnum].data[batch_index], ndmin=2)),
+                    torch.full([1], target[batch_index], dtype=torch.long))
+            args.exit_taken[exitnum] += 1
 
+def earlyexit_validate_stats(args):
+    # Print some interesting summary stats for number of data points that could exit early
+    top1k_stats = [0] * args.num_exits
+    top5k_stats = [0] * args.num_exits
+    losses_exits_stats = [0] * args.num_exits
+    sum_exit_stats = 0
+    for exitnum in range(args.num_exits):
+        if args.exit_taken[exitnum]:
+            sum_exit_stats += args.exit_taken[exitnum]
+            msglogger.info("Exit %d: %d", exitnum, args.exit_taken[exitnum])
+            top1k_stats[exitnum] += args.exiterrors[exitnum].value(1)
+            top5k_stats[exitnum] += args.exiterrors[exitnum].value(5)
+            losses_exits_stats[exitnum] += args.losses_exits[exitnum].mean
+    for exitnum in range(args.num_exits):
+        if args.exit_taken[exitnum]:
+            msglogger.info("Percent Early Exit %d: %.3f", exitnum,
+                           (args.exit_taken[exitnum]*100.0) / sum_exit_stats)
+    total_top1 = 0
+    total_top5 = 0
+    for exitnum in range(args.num_exits):
+        total_top1 += (top1k_stats[exitnum] * (args.exit_taken[exitnum] / sum_exit_stats))
+        total_top5 += (top5k_stats[exitnum] * (args.exit_taken[exitnum] / sum_exit_stats))
+        msglogger.info("Accuracy Stats for exit %d: top1 = %.3f, top5 = %.3f", exitnum, top1k_stats[exitnum], top5k_stats[exitnum])
+    msglogger.info("Totals for entire network with early exits: top1 = %.3f, top5 = %.3f", total_top1, total_top5)
+    return(total_top1, total_top5, losses_exits_stats)
 
-def evaluate_model(model, criterion, test_loader, loggers, args):
+def evaluate_model(model, criterion, test_loader, loggers, activations_collectors, args):
     # This sample application can be invoked to evaluate the accuracy of your model on
     # the test dataset.
     # You can optionally quantize the model to 8-bit integer before evaluation.
@@ -616,16 +706,20 @@ def evaluate_model(model, criterion, test_loader, loggers, args):
     if not isinstance(loggers, list):
         loggers = [loggers]
 
-    if args.quantize:
+    if args.quantize_eval:
         model.cpu()
-        quantizer = quantization.SymmetricLinearQuantizer(model, 8, 8)
+        quantizer = quantization.SymmetricLinearQuantizer(model, args.qe_bits_acts, args.qe_bits_wts,
+                                                          args.qe_bits_accum, args.qe_clip_acts,
+                                                          args.qe_no_clip_layers)
         quantizer.prepare_model()
         model.cuda()
-    top1, _, _ = test(test_loader, model, criterion, loggers, args=args)
-    if args.quantize:
+
+    top1, _, _ = test(test_loader, model, criterion, loggers, activations_collectors, args=args)
+
+    if args.quantize_eval:
         checkpoint_name = 'quantized'
         apputils.save_checkpoint(0, args.arch, model, optimizer=None, best_top1=top1,
-                                 name='_'.split(args.name, checkpoint_name) if args.name else checkpoint_name,
+                                 name='_'.join([args.name, checkpoint_name]) if args.name else checkpoint_name,
                                  dir=msglogger.logdir)
 
 
@@ -645,7 +739,8 @@ def sensitivity_analysis(model, criterion, data_loader, loggers, args):
     if not isinstance(loggers, list):
         loggers = [loggers]
     test_fnc = partial(test, test_loader=data_loader, criterion=criterion,
-                       loggers=loggers, args=args)
+                       loggers=loggers, args=args,
+                       activations_collectors=create_activation_stats_collectors(model, None))
     which_params = [param_name for param_name, _ in model.named_parameters()]
     sensitivity = distiller.perform_sensitivity_analysis(model,
                                                          net_params=which_params,
