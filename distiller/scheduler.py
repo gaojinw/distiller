@@ -100,6 +100,9 @@ class CompressionScheduler(object):
                 self.policies[epoch].append(policy)
             assert len(self.policies[epoch]) > 0
 
+        starting_epoch = epochs[0]
+        ending_epoch = epochs[-1]+1
+
         self.sched_metadata[policy] = {'starting_epoch': starting_epoch,
                                        'ending_epoch': ending_epoch,
                                        'frequency': frequency}
