@@ -34,6 +34,7 @@ import distiller
 from distiller import normalize_module_name, denormalize_module_name
 from apputils import SummaryGraph
 from models import create_model
+from examples.style_transfer_compression.network.transformer_net import TransformerNet
 msglogger = logging.getLogger()
 
 ThinningRecipe = namedtuple('ThinningRecipe', ['modules', 'parameters'])
@@ -64,13 +65,17 @@ __all__ = ['ThinningRecipe', 'resnet_cifar_remove_layers',
 
 
 def create_graph(dataset, arch):
-    if dataset == 'imagenet':
-        dummy_input = torch.randn((1, 3, 224, 224), requires_grad=False)
-    elif dataset == 'cifar10':
-        dummy_input = torch.randn((1, 3, 32, 32))
-    assert dummy_input is not None, "Unsupported dataset ({}) - aborting draw operation".format(dataset)
+    # if dataset == 'imagenet':
+    #    dummy_input = torch.randn((1, 3, 224, 224), requires_grad=False)
+    #elif dataset == 'cifar10':
+    #    dummy_input = torch.randn((1, 3, 32, 32))
+    # assert dummy_input is not None, "Unsupported dataset ({}) - aborting draw operation".format(dataset)
+    msglogger.info("input size is {}".format(dataset))
+    dummy_input = torch.randn((1, 3, dataset, dataset), requires_grad=False)
+    model = TransformerNet()
+    model.cuda()
 
-    model = create_model(False, dataset, arch, parallel=False)
+    # model = create_model(False, dataset, arch, parallel=False)
     assert model is not None
     return SummaryGraph(model, dummy_input.cuda())
 
@@ -114,6 +119,22 @@ def bn_thinning(thinning_recipe, layers, bn_name, len_thin_features, thin_featur
     thinning_recipe.parameters[bn_name+'.weight'] = [(0, thin_features)]
     thinning_recipe.parameters[bn_name+'.bias'] = [(0, thin_features)]
 
+def in_thinning(thinning_recipe, layers, in_name, len_thin_features, thin_features):
+    """Adjust the sizes of the parameters of a InstanceNormalization layer
+    This function is invoked after the Convolution layer preceeding a IN layer has
+    changed dimensions (filters or channels were removed), and the IN layer also
+    requires updating as a result.
+    """
+    in_module = layers[in_name]
+    assert isinstance(in_module, torch.nn.modules.instancenorm.InstanceNorm2d)
+
+    in_directive = thinning_recipe.modules.get(in_name, {})
+    in_directive['num_features'] = len_thin_features
+    thinning_recipe.modules[in_name] = in_directive
+
+    # These are the scale and shift tensors
+    thinning_recipe.parameters[in_name+'.weight'] = [(0, thin_features)]
+    thinning_recipe.parameters[in_name+'.bias'] = [(0, thin_features)]
 
 def resnet_cifar_remove_layers(model):
     """Remove layers from ResNet-Cifar
@@ -357,6 +378,16 @@ def create_thinning_recipe_filters(sgraph, model, zeros_mask_dict):
             bn_layer_name = denormalize_module_name(model, bn_layers[0])
             bn_thinning(thinning_recipe, layers, bn_layer_name,
                         len_thin_features=num_nnz_filters, thin_features=indices)
+
+        # Now handle the InstancehNormalization layer that follows the convolution
+        in_layers = sgraph.successors_f(normalize_module_name(layer_name), ['InstanceNormalization'])
+        if len(in_layers) > 0:
+            assert len(in_layers) == 1
+            # Thinning of the IN layer that follows the convolution
+            in_layer_name = denormalize_module_name(model, in_layers[0])
+            in_thinning(thinning_recipe, layers, in_layer_name,
+                        len_thin_features=num_nnz_filters, thin_features=indices)
+
     return thinning_recipe
 
 
