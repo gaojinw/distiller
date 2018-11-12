@@ -70,7 +70,6 @@ def create_graph(dataset, arch):
     #elif dataset == 'cifar10':
     #    dummy_input = torch.randn((1, 3, 32, 32))
     # assert dummy_input is not None, "Unsupported dataset ({}) - aborting draw operation".format(dataset)
-    msglogger.info("input size is {}".format(dataset))
     dummy_input = torch.randn((1, 3, dataset, dataset), requires_grad=False)
     model = TransformerNet()
     model.cuda()
