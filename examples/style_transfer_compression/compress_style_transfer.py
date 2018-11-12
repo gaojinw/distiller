@@ -520,7 +520,7 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, style, device, 
     msglogger.info('%d samples (%d per mini-batch)', total_samples, batch_size)
 
     steps_per_epoch = math.ceil(total_samples / batch_size)
-    msglogger.info('Training epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
+    msglogger.info('Validation epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
 
     features_style = vgg(utils.normalize_batch(style))
     gram_style = [utils.gram_matrix(y) for y in features_style]

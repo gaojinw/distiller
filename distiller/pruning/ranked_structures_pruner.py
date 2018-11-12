@@ -105,8 +105,10 @@ class L1RankedStructureParameterPruner(RankedStructureParameterPruner):
         # First we rank the filters
         view_filters = param.view(param.size(0), -1)
         filter_mags = view_filters.data.abs().mean(dim=1)
-        topk_filters = int(fraction_to_prune * filter_mags.size(0))
-        if topk_filters == 0:
+        remaining_filters = int( np.around((1-fraction_to_prune) * filter_mags.size(0) / 4.0) * 4 )
+        topk_filters = filter_mags.size(0) - remaining_filters
+        # topk_filters = int(fraction_to_prune * filter_mags.size(0))
+        if topk_filters <= 0:
             msglogger.info("Too few filters - can't prune %.1f%% filters", 100*fraction_to_prune)
             return
         bottomk, _ = torch.topk(filter_mags, topk_filters, largest=False, sorted=True)
