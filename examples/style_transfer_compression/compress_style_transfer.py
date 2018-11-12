@@ -294,7 +294,7 @@ def main():
             model, chkpt_file=args.resume)
 
     # Define loss function (criterion) and optimizer
-    criterion = torch.nn.MSELoss().cuda()
+    criterion = torch.nn.MSELoss()
     optimizer = Adam(model.parameters(), args.lr)
     msglogger.info('Optimizer Type: %s', type(optimizer))
     msglogger.info('Optimizer Args: %s', optimizer.defaults)
@@ -372,7 +372,7 @@ def main():
 
         # evaluate on validation set
         with collectors_context(activations_collectors["valid"]) as collectors:
-            top1, top5, vloss = validate(train_loader, model, criterion, [pylogger], args, style, device, epoch)
+            top1, top5, vloss = validate(train_loader, model, criterion, vgg, [pylogger], args, style, device, epoch)
             distiller.log_activation_statsitics(epoch, "valid", loggers=[tflogger],
                                                 collector=collectors["sparsity"])
             save_collectors_data(collectors, msglogger.logdir)
@@ -488,16 +488,16 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
         end = time.time()
 
 
-def validate(val_loader, model, criterion, loggers, args, style, device, epoch=-1):
+def validate(val_loader, model, criterion, vgg, loggers, args, style, device, epoch=-1):
     """Model validation"""
     if epoch > -1:
         msglogger.info('--- validate (epoch=%d)-----------', epoch)
     else:
         msglogger.info('--- validate ---------------------')
-    return _validate(val_loader, model, criterion, loggers, args, style, epoch)
+    return _validate(val_loader, model, criterion, vgg, loggers, args, style, device, epoch)
 
 
-def _validate(data_loader, model, criterion, loggers, args, style, device, epoch=-1):
+def _validate(data_loader, model, criterion, vgg, loggers, args, style, device, epoch=-1):
     """Execute the validation/test loop."""
     losses = {'objective_loss': tnt.AverageValueMeter()}
     # classerr = tnt.ClassErrorMeter(accuracy=True, topk=(1, 5))
