@@ -320,6 +320,8 @@ def main():
     ])
     train_dataset = datasets.ImageFolder(args.dataset, transform)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
+    val_dataset = datasets.ImageFolder(args.dataset, transform)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
     msglogger.info('Dataset sizes:\n\ttraining=%d\n',
                    len(train_loader.sampler))
 
@@ -375,7 +377,7 @@ def main():
 
         # evaluate on validation set
         with collectors_context(activations_collectors["valid"]) as collectors:
-            top1, top5, vloss = validate(train_loader, model, criterion, vgg, [pylogger], args, gram_style, device, epoch)
+            top1, top5, vloss = validate(val_loader, model, criterion, vgg, [pylogger], args, gram_style, device, epoch)
             distiller.log_activation_statsitics(epoch, "valid", loggers=[tflogger],
                                                 collector=collectors["sparsity"])
             save_collectors_data(collectors, msglogger.logdir)
@@ -588,6 +590,10 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, dev
 
                 distiller.log_training_progress(stats, None, epoch, steps_completed,
                                                 total_steps, args.print_freq, loggers)
+           
+            if steps_completed == 2000:
+                break
+
     if not args.earlyexit_thresholds:
         msglogger.info('==> Top1: %.3f    Top5: %.3f    Loss: %.3f\n',
                        0, 0, losses['objective_loss'].mean)
