@@ -71,6 +71,7 @@ fi
 # echo "Learning Rate:  $LR" | tee -a $log_file
 
 
+# --pretrained ./pretrained/models/style4_transfer.model \
 nohup python3 $RUN_SCRIPT \
 --dataset /host/dataset/COCO/ \
 --name ${CONFIG%.*} \
@@ -79,7 +80,7 @@ nohup python3 $RUN_SCRIPT \
 --out-dir ./logs \
 --print-freq 500 \
 --image-size 256 \
---pretrained ./pretrained/models/style4_transfer.model \
+--pretrained /host/converter_trial/coreml/training/style4/fewer_resblocks_1e10/ckpt_epoch_1_batch_id_6000.pth \
 --content-weight 1e5 \
 --style-weight $STYLEWEIGHT \
 --style-image $STYLE_PICTURE \
