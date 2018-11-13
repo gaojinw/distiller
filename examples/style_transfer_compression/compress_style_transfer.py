@@ -269,6 +269,9 @@ def main():
     style = utils.load_image(args.style_image, size=args.style_size)
     style = style_transform(style)
     style = style.repeat(args.batch_size, 1, 1, 1).to(device)
+
+    features_style = vgg(utils.normalize_batch(style))
+    gram_style = [utils.gram_matrix(y) for y in features_style]
     if args.pretrained:
         resumed_state_dict = torch.load(args.pretrained)
         # remove saved deprecated running_* keys in InstanceNorm from the checkpoint
@@ -363,7 +366,7 @@ def main():
         # Train for one epoch
         with collectors_context(activations_collectors["train"]) as collectors:
             train(train_loader, model, criterion, optimizer, vgg, epoch, compression_scheduler, [tflogger, pylogger],
-                  args.print_freq, style, args.content_weight, args.style_weight, device)
+                  args.print_freq, gram_style, args.content_weight, args.style_weight, device)
             distiller.log_weights_sparsity(model, epoch, loggers=[tflogger, pylogger])
             distiller.log_activation_statsitics(epoch, "train", loggers=[tflogger],
                                                 collector=collectors["sparsity"])
@@ -372,7 +375,7 @@ def main():
 
         # evaluate on validation set
         with collectors_context(activations_collectors["valid"]) as collectors:
-            top1, top5, vloss = validate(train_loader, model, criterion, vgg, [pylogger], args, style, device, epoch)
+            top1, top5, vloss = validate(train_loader, model, criterion, vgg, [pylogger], args, gram_style, device, epoch)
             distiller.log_activation_statsitics(epoch, "valid", loggers=[tflogger],
                                                 collector=collectors["sparsity"])
             save_collectors_data(collectors, msglogger.logdir)
@@ -398,7 +401,7 @@ OBJECTIVE_LOSS_KEY = 'Objective Loss'
 
 
 def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_scheduler, loggers,
-          print_freq, style, content_weight, style_weight, device):
+          print_freq, gram_style, content_weight, style_weight, device):
     #     np.random.seed(args.seed)
     #     torch.manual_seed(args.seed)
     """Training loop for one epoch."""
@@ -406,20 +409,18 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
                           (OBJECTIVE_LOSS_KEY, tnt.AverageValueMeter())])
 
     batch_time = tnt.AverageValueMeter()
-
     total_samples = len(train_loader.sampler)
     batch_size = train_loader.batch_size
     steps_per_epoch = math.ceil(total_samples / batch_size)
     msglogger.info('Training epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
-
-    features_style = vgg(utils.normalize_batch(style))
-    gram_style = [utils.gram_matrix(y) for y in features_style]
 
     # Switch to train mode
     model.train()
     end = time.time()
 
     for train_step, (x, _) in enumerate(train_loader):
+        n_batch = len(x)
+
         # Execute the forward phase, compute the output and measure loss
         if compression_scheduler:
             compression_scheduler.on_minibatch_begin(epoch, train_step, steps_per_epoch, optimizer)
@@ -438,7 +439,7 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
         style_loss = 0.
         for ft_y, gm_s in zip(features_y, gram_style):
             gm_y = utils.gram_matrix(ft_y)
-            style_loss += criterion(gm_y, gm_s[:batch_size, :, :])
+            style_loss += criterion(gm_y, gm_s[:n_batch, :, :])
         style_loss *= style_weight
 
         loss = content_loss + style_loss
@@ -488,16 +489,16 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
         end = time.time()
 
 
-def validate(val_loader, model, criterion, vgg, loggers, args, style, device, epoch=-1):
+def validate(val_loader, model, criterion, vgg, loggers, args, gram_style, device, epoch=-1):
     """Model validation"""
     if epoch > -1:
         msglogger.info('--- validate (epoch=%d)-----------', epoch)
     else:
         msglogger.info('--- validate ---------------------')
-    return _validate(val_loader, model, criterion, vgg, loggers, args, style, device, epoch)
+    return _validate(val_loader, model, criterion, vgg, loggers, args, gram_style, device, epoch)
 
 
-def _validate(data_loader, model, criterion, vgg, loggers, args, style, device, epoch=-1):
+def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, device, epoch=-1):
     """Execute the validation/test loop."""
     losses = {'objective_loss': tnt.AverageValueMeter()}
     # classerr = tnt.ClassErrorMeter(accuracy=True, topk=(1, 5))
@@ -522,9 +523,6 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, style, device, 
     steps_per_epoch = math.ceil(total_samples / batch_size)
     msglogger.info('Validation epoch: %d samples (%d per mini-batch)', total_samples, batch_size)
 
-    features_style = vgg(utils.normalize_batch(style))
-    gram_style = [utils.gram_matrix(y) for y in features_style]
-
     # Switch to evaluation mode
     model.eval()
 
@@ -532,6 +530,8 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, style, device, 
     for validation_step, (x, target) in enumerate(data_loader):
         with torch.no_grad():
             if not args.earlyexit_thresholds:
+                n_batch = len(x)
+
                 x = x.to(device)
                 y = model(x)
 
@@ -546,7 +546,7 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, style, device, 
                 style_loss = 0.
                 for ft_y, gm_s in zip(features_y, gram_style):
                     gm_y = utils.gram_matrix(ft_y)
-                    style_loss += criterion(gm_y, gm_s[:batch_size, :, :])
+                    style_loss += criterion(gm_y, gm_s[:n_batch, :, :])
                 style_loss *= args.style_weight
 
                 loss = content_loss + style_loss
