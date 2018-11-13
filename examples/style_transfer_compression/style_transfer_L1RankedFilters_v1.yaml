@@ -157,11 +157,11 @@ lr_schedulers:
 policies:
   - pruner:
       instance_name: filter_pruner
-    epochs: [0]
+    epochs: [0, 2]
 
   - extension:
       instance_name: net_thinner
-    epochs: [0]
+    epochs: [0, 2]
 
   - lr_scheduler:
       instance_name: training_lr
