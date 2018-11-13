@@ -117,7 +117,7 @@
 lr_schedulers:
   training_lr:
     class: StepLR
-    step_size: 2
+    step_size: 1
     gamma: 0.10
 
 policies:

@@ -1,19 +1,24 @@
 #!/bin/sh
 #MODEL=${MODEL_FULLNAME%.*}
 
-[ ! $# -ge 4 ] && { echo "Usage: $0 STYLE config_yaml CUDA style_weights optional:resume lr"; exit 1; }
+[ ! $# -ge 4 ] && { echo "Usage: $0 STYLE config_yaml CUDA style_weights optional: epochs resume lr"; exit 1; }
 
 STYLENAME=$1
 CONFIG=$2
 GPUID=$3
 STYLEWEIGHT=$4
 if [ ! -z $5 ]; then
-    RESUMEMODEL=$5
+    EPOCHS=$5
+else
+    EPOCHS="4"
+fi
+if [ ! -z $6 ]; then
+    RESUMEMODEL=$6
 else
     RESUMEMODEL="None"
 fi
-if [ ! -z $6 ]; then
-    LR=$6
+if [ ! -z $7 ]; then
+    LR=$7
 else
     LR="1e-4"
 fi
@@ -68,12 +73,13 @@ fi
 
 nohup python3 $RUN_SCRIPT \
 --dataset /host/dataset/COCO/ \
---epochs 4 \
+--name ${CONFIG%.*} \
+--epochs ${EPOCHS} \
 --batch-size 8 \
 --out-dir ./logs \
 --print-freq 500 \
 --image-size 256 \
---pretrained ./pretrained/models/mosaic.pth \
+--pretrained ./pretrained/models/style4_transfer.model \
 --content-weight 1e5 \
 --style-weight $STYLEWEIGHT \
 --style-image $STYLE_PICTURE \
