@@ -56,6 +56,7 @@ def save_checkpoint(epoch, arch, model, optimizer=None, scheduler=None,
     msglogger.info("Saving checkpoint to: %s" % fullpath)
     filename_best = 'best.pth.tar' if name is None else name + '_best.pth.tar'
     fullpath_best = os.path.join(dir, filename_best)
+    fullpath_best_mlmodel = os.path.join(dir, 'best.mlmodel' if name is None else name + '_best.mlmodel')
     checkpoint = {}
     checkpoint['epoch'] = epoch
     checkpoint['arch'] = arch
@@ -74,6 +75,7 @@ def save_checkpoint(epoch, arch, model, optimizer=None, scheduler=None,
     torch.save(checkpoint, fullpath)
     if is_best:
         shutil.copyfile(fullpath, fullpath_best)
+        torch.save(model.eval().state_dict(), fullpath_best_mlmodel)
 
 
 def load_checkpoint(model, chkpt_file, optimizer=None):
