@@ -56,7 +56,7 @@ def save_checkpoint(epoch, arch, model, optimizer=None, scheduler=None,
     msglogger.info("Saving checkpoint to: %s" % fullpath)
     filename_best = 'best.pth.tar' if name is None else name + '_best.pth.tar'
     fullpath_best = os.path.join(dir, filename_best)
-    fullpath_best_mlmodel = os.path.join(dir, 'best.mlmodel' if name is None else name + '_best.mlmodel')
+    fullpath_best_mlmodel = os.path.join(dir, 'best.model' if name is None else name + '_best.model')
     checkpoint = {}
     checkpoint['epoch'] = epoch
     checkpoint['arch'] = arch
