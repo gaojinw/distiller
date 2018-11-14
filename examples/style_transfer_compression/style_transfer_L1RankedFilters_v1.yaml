@@ -165,6 +165,6 @@ policies:
 
 #  - lr_scheduler:
 #      instance_name: training_lr
-#      starting_epoch: 0
-#      ending_epoch: 4
-#      frequency: 1
+#    starting_epoch: 0
+#    ending_epoch: 4
+#    frequency: 1
