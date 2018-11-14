@@ -27,9 +27,16 @@ from distiller.data_loggers import *
 import distiller.quantization as quantization
 from models import ALL_MODEL_NAMES, create_model
 
+from torch.utils.data import DataLoader
+from torchvision import datasets
+from torchvision import transforms
+from torch.optim import Adam
+import re
+
 sys.path.append('/host/model_compression/distiller/examples/style_transfer_compression/network')
-from utils import *
-from neural_style import *
+import utils
+from transformer_net import *
+from vgg import *
 
 # Logger handle
 msglogger = None

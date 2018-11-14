@@ -1,7 +1,7 @@
 #!/bin/sh
 #MODEL=${MODEL_FULLNAME%.*}
 
-[ ! $# -ge 4 ] && { echo "Usage: $0 STYLE config_yaml CUDA style_weights optional: epochs resume lr"; exit 1; }
+[ ! $# -ge 4 ] && { echo "Usage: $0 STYLE config_yaml CUDA style_weights optional: epochs pretrained lr"; exit 1; }
 
 STYLENAME=$1
 CONFIG=$2
@@ -13,9 +13,9 @@ else
     EPOCHS="4"
 fi
 if [ ! -z $6 ]; then
-    RESUMEMODEL=$6
+    PreTrainedMODEL=$6
 else
-    RESUMEMODEL="None"
+    PreTrainedMODEL="None"
 fi
 if [ ! -z $7 ]; then
     LR=$7
@@ -71,7 +71,6 @@ fi
 # echo "Learning Rate:  $LR" | tee -a $log_file
 
 
-# --pretrained ./pretrained/models/style4_transfer.model \
 nohup python3 $RUN_SCRIPT \
 --dataset /host/dataset/COCO/ \
 --name ${CONFIG%.*} \
@@ -80,7 +79,7 @@ nohup python3 $RUN_SCRIPT \
 --out-dir ./logs \
 --print-freq 500 \
 --image-size 256 \
---pretrained /host/converter_trial/coreml/training/style4/fewer_resblocks_1e10/ckpt_epoch_1_batch_id_6000.pth \
+--pretrained $PreTrainedMODEL \
 --content-weight 1e5 \
 --style-weight $STYLEWEIGHT \
 --style-image $STYLE_PICTURE \
