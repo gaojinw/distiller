@@ -34,7 +34,7 @@ import distiller
 from distiller import normalize_module_name, denormalize_module_name
 from apputils import SummaryGraph
 from models import create_model
-from examples.style_transfer_compression.network.transformer_net import TransformerNet
+import copy
 msglogger = logging.getLogger()
 
 ThinningRecipe = namedtuple('ThinningRecipe', ['modules', 'parameters'])
@@ -65,19 +65,22 @@ __all__ = ['ThinningRecipe', 'resnet_cifar_remove_layers',
 
 
 def create_graph(dataset, arch):
-    # if dataset == 'imagenet':
-    #    dummy_input = torch.randn((1, 3, 224, 224), requires_grad=False)
-    #elif dataset == 'cifar10':
-    #    dummy_input = torch.randn((1, 3, 32, 32))
-    # assert dummy_input is not None, "Unsupported dataset ({}) - aborting draw operation".format(dataset)
-    dummy_input = torch.randn((1, 3, dataset, dataset), requires_grad=False)
-    model = TransformerNet()
-    model.cuda()
+    if dataset == 'imagenet':
+        dummy_input = torch.randn((1, 3, 224, 224), requires_grad=False)
+    elif dataset == 'cifar10':
+        dummy_input = torch.randn((1, 3, 32, 32))
+    assert dummy_input is not None, "Unsupported dataset ({}) - aborting draw operation".format(dataset)
 
-    # model = create_model(False, dataset, arch, parallel=False)
+    model = create_model(False, dataset, arch, parallel=False)
     assert model is not None
     return SummaryGraph(model, dummy_input.cuda())
 
+def create_graph_customize(model, image_size):
+    dummy_input = torch.randn((1, 3, image_size, image_size), requires_grad=False)
+    model_copy = copy.deepcopy(model).cuda()
+
+    assert model_copy is not None
+    return SummaryGraph(model_copy, dummy_input.cuda())
 
 def param_name_2_layer_name(param_name):
     return param_name[:-len('weights')]
@@ -217,7 +220,8 @@ def apply_and_save_recipe(model, zeros_mask_dict, thinning_recipe, optimizer):
 
 
 def remove_filters(model, zeros_mask_dict, arch, dataset, optimizer):
-    sgraph = create_graph(dataset, arch)
+    sgraph = create_graph_customize(model, dataset)
+    # sgraph = create_graph(dataset, arch)
     thinning_recipe = create_thinning_recipe_filters(sgraph, model, zeros_mask_dict)
     apply_and_save_recipe(model, zeros_mask_dict, thinning_recipe, optimizer)
     return model
