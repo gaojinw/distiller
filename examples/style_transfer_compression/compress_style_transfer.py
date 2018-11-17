@@ -139,8 +139,6 @@ parser.add_argument('--style-weight', default=1e10, type=float,
                     metavar='SW', help='Style Weights')
 parser.add_argument('--style-image', default='', type=str, metavar='StyleImagePath',
                     help='Style Image Path')
-parser.add_argument('--cuda', default=1, type=int,
-                    metavar='CUDA', help='specify which cuda to use (default: 1)')
 
 distiller.knowledge_distillation.add_distillation_args(parser, ALL_MODEL_NAMES, True)
 
@@ -236,21 +234,21 @@ def main():
         # results are not re-produced when benchmark is set. So enabling only if deterministic mode disabled.
         cudnn.benchmark = True
 
-    # if args.gpus is not None:
-    #     try:
-    #         args.gpus = [int(s) for s in args.gpus.split(',')]
-    #     except ValueError:
-    #         msglogger.error('ERROR: Argument --gpus must be a comma-separated list of integers only')
-    #         exit(1)
-    #     available_gpus = torch.cuda.device_count()
-    #     for dev_id in args.gpus:
-    #         if dev_id >= available_gpus:
-    #             msglogger.error('ERROR: GPU device ID {0} requested, but only {1} devices available'
-    #                             .format(dev_id, available_gpus))
-    #             exit(1)
-    #     # Set default device in case the first one on the list != 0
-    #     torch.cuda.set_device(args.gpus[0])
-    #
+    if args.gpus is not None:
+        try:
+            args.gpus = [int(s) for s in args.gpus.split(',')]
+        except ValueError:
+            msglogger.error('ERROR: Argument --gpus must be a comma-separated list of integers only')
+            exit(1)
+        available_gpus = torch.cuda.device_count()
+        for dev_id in args.gpus:
+            if dev_id >= available_gpus:
+                msglogger.error('ERROR: GPU device ID {0} requested, but only {1} devices available'
+                                .format(dev_id, available_gpus))
+                exit(1)
+        # Set default device in case the first one on the list != 0
+        torch.cuda.set_device(args.gpus[0])
+    
     # # Infer the dataset from the model name
     # args.dataset = 'cifar10' if 'cifar' in args.arch else 'imagenet'
     # args.num_classes = 10 if args.dataset == 'cifar10' else 1000
@@ -263,30 +261,27 @@ def main():
 
     # Create the model
     model = TransformerNet()
-    if args.cuda:
-        device = torch.device("cuda:{}".format(args.cuda - 1))
-    else:
-        device = torch.device("cpu")
-    model.to(device)
-    vgg = Vgg16(requires_grad=False).to(device)
+    model.cuda()
+    vgg = Vgg16(requires_grad=False).cuda()
     style_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Lambda(lambda x: x.mul(255))
     ])
     style = utils.load_image(args.style_image, size=args.style_size)
     style = style_transform(style)
-    style = style.repeat(args.batch_size, 1, 1, 1).to(device)
+    style = style.repeat(args.batch_size, 1, 1, 1).cuda()
 
     features_style = vgg(utils.normalize_batch(style))
     gram_style = [utils.gram_matrix(y) for y in features_style]
     if args.pretrained:
-        resumed_state_dict = torch.load(args.pretrained)
-        # remove saved deprecated running_* keys in InstanceNorm from the checkpoint
-        for k in list(resumed_state_dict.keys()):
-            if re.search(r'in\d+\.running_(mean|var)$', k):
-                del resumed_state_dict[k]
-        model.load_state_dict(resumed_state_dict)
-        msglogger.info('Loaded pretrained model from %s\n', args.pretrained)
+        if os.path.isfile(args.pretrained):
+            resumed_state_dict = torch.load(args.pretrained)
+            # remove saved deprecated running_* keys in InstanceNorm from the checkpoint
+            for k in list(resumed_state_dict.keys()):
+                if re.search(r'in\d+\.running_(mean|var)$', k):
+                    del resumed_state_dict[k]
+            model.load_state_dict(resumed_state_dict)
+            msglogger.info('Loaded pretrained model from %s\n', args.pretrained)
 
     compression_scheduler = None
     # Create a couple of logging backends.  TensorBoardLogger writes log files in a format
@@ -345,7 +340,7 @@ def main():
         # requires a compression schedule configuration file in YAML.
         compression_scheduler = distiller.file_config(model, optimizer, args.compress)
         # Model is re-transferred to GPU in case parameters were added (e.g. PACTQuantizer)
-        model.to(device)
+        model.cuda()
     else:
         compression_scheduler = distiller.CompressionScheduler(model)
 
@@ -375,7 +370,7 @@ def main():
         # Train for one epoch
         with collectors_context(activations_collectors["train"]) as collectors:
             train(train_loader, model, criterion, optimizer, vgg, epoch, compression_scheduler, [tflogger, pylogger],
-                  args.print_freq, gram_style, args.content_weight, args.style_weight, device)
+                  args.print_freq, gram_style, args.content_weight, args.style_weight)
             distiller.log_weights_sparsity(model, epoch, loggers=[tflogger, pylogger])
             distiller.log_activation_statsitics(epoch, "train", loggers=[tflogger],
                                                 collector=collectors["sparsity"])
@@ -384,7 +379,7 @@ def main():
 
         # evaluate on validation set
         with collectors_context(activations_collectors["valid"]) as collectors:
-            top1, top5, vloss = validate(val_loader, model, criterion, vgg, [pylogger], args, gram_style, device, epoch)
+            top1, top5, vloss = validate(val_loader, model, criterion, vgg, [pylogger], args, gram_style, epoch)
             distiller.log_activation_statsitics(epoch, "valid", loggers=[tflogger],
                                                 collector=collectors["sparsity"])
             save_collectors_data(collectors, msglogger.logdir)
@@ -410,7 +405,7 @@ OBJECTIVE_LOSS_KEY = 'Objective Loss'
 
 
 def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_scheduler, loggers,
-          print_freq, gram_style, content_weight, style_weight, device):
+          print_freq, gram_style, content_weight, style_weight):
     #     np.random.seed(args.seed)
     #     torch.manual_seed(args.seed)
     """Training loop for one epoch."""
@@ -434,7 +429,7 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
         if compression_scheduler:
             compression_scheduler.on_minibatch_begin(epoch, train_step, steps_per_epoch, optimizer)
 
-        x = x.to(device)
+        x = x.to('cuda')
         y = model(x)
 
         y = utils.normalize_batch(y)
@@ -498,16 +493,16 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
         end = time.time()
 
 
-def validate(val_loader, model, criterion, vgg, loggers, args, gram_style, device, epoch=-1):
+def validate(val_loader, model, criterion, vgg, loggers, args, gram_style, epoch=-1):
     """Model validation"""
     if epoch > -1:
         msglogger.info('--- validate (epoch=%d)-----------', epoch)
     else:
         msglogger.info('--- validate ---------------------')
-    return _validate(val_loader, model, criterion, vgg, loggers, args, gram_style, device, epoch)
+    return _validate(val_loader, model, criterion, vgg, loggers, args, gram_style, epoch)
 
 
-def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, device, epoch=-1):
+def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epoch=-1):
     """Execute the validation/test loop."""
     losses = {'objective_loss': tnt.AverageValueMeter()}
     # classerr = tnt.ClassErrorMeter(accuracy=True, topk=(1, 5))
@@ -541,7 +536,7 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, dev
             if not args.earlyexit_thresholds:
                 n_batch = len(x)
 
-                x = x.to(device)
+                x = x.to('cuda')
                 y = model(x)
 
                 y = utils.normalize_batch(y)

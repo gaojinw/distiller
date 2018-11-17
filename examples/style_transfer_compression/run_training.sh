@@ -15,7 +15,7 @@ fi
 if [ ! -z $6 ]; then
     PreTrainedMODEL=$6
 else
-    PreTrainedMODEL="None"
+    PreTrainedMODEL=""
 fi
 if [ ! -z $7 ]; then
     LR=$7
@@ -86,4 +86,4 @@ nohup python3 $RUN_SCRIPT \
 --compress $CONFIG \
 --num-best-scores 1 \
 --lr $LR \
---cuda $GPUID &
+--gpus $GPUID &
