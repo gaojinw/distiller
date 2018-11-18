@@ -457,24 +457,52 @@ def optimizer_thinning(optimizer, param, dim, indices, new_shape=None):
     This function is brittle as it is tested on SGD only and relies on the internal representation of
     the SGD optimizer, which can change w/o notice.
     """
-    if optimizer is None or not isinstance(optimizer, torch.optim.SGD):
+    if optimizer is None:
         return False
-    for group in optimizer.param_groups:
-        momentum = group.get('momentum', 0)
-        if momentum == 0:
-            continue
-        for p in group['params']:
-            if id(p) != id(param):
+
+    if isinstance(optimizer, torch.optim.SGD):
+        for group in optimizer.param_groups:
+            momentum = group.get('momentum', 0)
+            if momentum == 0:
                 continue
-            param_state = optimizer.state[p]
-            if 'momentum_buffer' in param_state:
-                param_state['momentum_buffer'] = torch.index_select(param_state['momentum_buffer'], dim, indices)
-                if new_shape is not None:
+            for p in group['params']:
+                if id(p) != id(param):
+                    continue
+                param_state = optimizer.state[p]
+                if 'momentum_buffer' in param_state:
+                    param_state['momentum_buffer'] = torch.index_select(param_state['momentum_buffer'], dim, indices)
+                    if new_shape is not None:
+                        msglogger.debug("optimizer_thinning: new shape {}".format(*new_shape))
+                        param_state['momentum_buffer'] = param_state['momentum_buffer'].resize_(*new_shape)
+                    return True
+
+    if isinstance(optimizer, torch.optim.Adam):
+        for group in optimizer.param_groups:
+            amsgrad = group['amsgrad']
+            for p in group['params']:
+                if id(p) != id(param):
+                    continue
+                param_state = optimizer.state[p]
+                resize_flag = False
+                if 'exp_avg' in param_state:
+                    param_state['exp_avg'] = torch.index_select(param_state['exp_avg'], dim, indices)
+                    if new_shape is not None:
+                        param_state['exp_avg'] = param_state['exp_avg'].resize_(*new_shape)
+                        resize_flag = True
+                if 'exp_avg_sq' in param_state:
+                    param_state['exp_avg_sq'] = torch.index_select(param_state['exp_avg_sq'], dim, indices)
+                    if new_shape is not None:
+                        param_state['exp_avg_sq'] = param_state['exp_avg_sq'].resize_(*new_shape)
+                        resize_flag = True
+                if amsgrad and 'max_exp_avg_sq' in param_state:
+                    param_state['max_exp_avg_sq'] = torch.index_select(param_state['max_exp_avg_sq'], dim, indices)
+                    if new_shape is not None:
+                        param_state['max_exp_avg_sq'] = param_state['max_exp_avg_sq'].resize_(*new_shape)
+                        resize_flag = True
+                if resize_flag:
                     msglogger.debug("optimizer_thinning: new shape {}".format(*new_shape))
-                    param_state['momentum_buffer'] = param_state['momentum_buffer'].resize_(*new_shape)
                 return True
     return False
-
 
 def execute_thinning_recipe(model, zeros_mask_dict, recipe, optimizer, loaded_from_file=False):
     """Apply a thinning recipe to a model.
