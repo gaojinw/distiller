@@ -50,7 +50,8 @@ def float_range(val_str):
 
 
 parser = argparse.ArgumentParser(description='Distiller image classification model compression')
-parser.add_argument('--dataset', metavar='DIR', help='path to dataset')
+parser.add_argument('--train-dataset', metavar='train_DIR', help='path to training dataset')
+parser.add_argument('--val-dataset', metavar='val_DIR', help='path to validation dataset')
 #parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
 #                    choices=ALL_MODEL_NAMES,
 #                    help='model architecture: ' +
@@ -309,7 +310,7 @@ def main():
 
     # This sample application can be invoked to produce various summary reports.
     if args.summary:
-        return summarize_model(model, args.dataset, which_summary=args.summary)
+        return summarize_model(model, args.train_dataset, which_summary=args.summary)
 
     # Load the datasets: the dataset to load is inferred from the model name passed
     # in args.arch.  The default dataset is ImageNet, but if args.arch contains the
@@ -320,9 +321,9 @@ def main():
         transforms.ToTensor(),
         transforms.Lambda(lambda x: x.mul(255))
     ])
-    train_dataset = datasets.ImageFolder(args.dataset, transform)
+    train_dataset = datasets.ImageFolder(args.train_dataset, transform)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size)
-    val_dataset = datasets.ImageFolder(args.dataset, transform)
+    val_dataset = datasets.ImageFolder(args.val_dataset, transform)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size)
     msglogger.info('Dataset sizes:\n\ttraining=%d\n',
                    len(train_loader.sampler))
@@ -346,7 +347,7 @@ def main():
 
     args.kd_policy = None
     if args.kd_teacher:
-        teacher = create_model(args.kd_pretrained, args.dataset, args.kd_teacher, device_ids=args.gpus)
+        teacher = create_model(args.kd_pretrained, args.train_dataset, args.kd_teacher, device_ids=args.gpus)
         if args.kd_resume:
             teacher, _, _ = apputils.load_checkpoint(teacher, chkpt_file=args.kd_resume)
         dlw = distiller.DistillationLossWeights(args.kd_distill_wt, args.kd_student_wt, args.kd_teacher_wt)
@@ -596,8 +597,6 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epo
                 distiller.log_training_progress(stats, None, epoch, steps_completed,
                                                 total_steps, args.print_freq, loggers)
            
-            if steps_completed == 2000:
-                break
 
     if not args.earlyexit_thresholds:
         msglogger.info('==> Top1: %.3f    Top5: %.3f    Loss: %.3f\n',
