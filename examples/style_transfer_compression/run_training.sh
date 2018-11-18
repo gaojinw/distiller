@@ -72,9 +72,9 @@ fi
 
 
 nohup python3 $RUN_SCRIPT \
---train-dataset /host/dataset/COCO/train2014 \
---val-dataset /host/dataset/COCO/val2017 \
---name ${CONFIG%.*} \
+--train-dataset /host/dataset/COCO/train \
+--val-dataset /host/dataset/COCO/val \
+--name ${STYLENAME}_${CONFIG%.*} \
 --epochs ${EPOCHS} \
 --batch-size 8 \
 --out-dir ./logs \

@@ -412,7 +412,9 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
     #     torch.manual_seed(args.seed)
     """Training loop for one epoch."""
     losses = OrderedDict([(OVERALL_LOSS_KEY, tnt.AverageValueMeter()),
-                          (OBJECTIVE_LOSS_KEY, tnt.AverageValueMeter())])
+                          (OBJECTIVE_LOSS_KEY, tnt.AverageValueMeter()),
+                          (STYLE_LOSS_KEY, tnt.AverageValueMeter()),
+                          (CONTENT_LOSS_KEY, tnt.AverageValueMeter())])
 
     batch_time = tnt.AverageValueMeter()
     total_samples = len(train_loader.sampler)
@@ -508,7 +510,9 @@ def validate(val_loader, model, criterion, vgg, loggers, args, gram_style, epoch
 
 def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epoch=-1):
     """Execute the validation/test loop."""
-    losses = {'objective_loss': tnt.AverageValueMeter()}
+    losses = OrderedDict([(OBJECTIVE_LOSS_KEY, tnt.AverageValueMeter()),
+                          (STYLE_LOSS_KEY, tnt.AverageValueMeter()),
+                          (CONTENT_LOSS_KEY, tnt.AverageValueMeter())])
     # classerr = tnt.ClassErrorMeter(accuracy=True, topk=(1, 5))
 
     if args.earlyexit_thresholds:
@@ -559,7 +563,9 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epo
 
                 loss = content_loss + style_loss
 
-                losses['objective_loss'].add(loss.item())
+                losses[STYLE_LOSS_KEY].add(style_loss.item())
+                losses[CONTENT_LOSS_KEY].add(content_loss.item())
+                losses[OBJECTIVE_LOSS_KEY].add(loss.item())
                 # classerr.add(output.data, target)
                 if args.display_confusion:
                     confusion.add(output.data, target)
@@ -574,10 +580,9 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epo
             if steps_completed % args.print_freq == 0:
                 if not args.earlyexit_thresholds:
                     stats = ('',
-                             OrderedDict([('Loss', losses['objective_loss'].mean)]))
-                #                             OrderedDict([('Loss', losses['objective_loss'].mean),
-                #                                          ('Top1', classerr.value(1)),
-                #                                          ('Top5', classerr.value(5))]))
+                            OrderedDict([('Objective Loss', losses[OBJECTIVE_LOSS_KEY].mean),
+                                         ('Style Loss', losses[STYLE_LOSS_KEY].mean),
+                                         ('Content Loss', losses[CONTENT_LOSS_KEY].mean)]))
                 else:
                     stats_dict = OrderedDict()
                     stats_dict['Test'] = validation_step
@@ -600,11 +605,11 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epo
 
     if not args.earlyexit_thresholds:
         msglogger.info('==> Top1: %.3f    Top5: %.3f    Loss: %.3f\n',
-                       0, 0, losses['objective_loss'].mean)
+                       0, 0, losses[OBJECTIVE_LOSS_KEY].mean)
 
         if args.display_confusion:
             msglogger.info('==> Confusion:\n%s\n', str(confusion.value()))
-        return 0, 0, losses['objective_loss'].mean
+        return 0, 0, losses[OBJECTIVE_LOSS_KEY].mean
     else:
         total_top1, total_top5, losses_exits_stats = earlyexit_validate_stats(args)
         return total_top1, total_top5, losses_exits_stats[args.num_exits-1]
