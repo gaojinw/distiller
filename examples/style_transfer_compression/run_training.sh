@@ -15,7 +15,7 @@ fi
 if [ ! -z $6 ]; then
     PreTrainedMODEL=$6
 else
-    PreTrainedMODEL=""
+    PreTrainedMODEL="None"
 fi
 if [ ! -z $7 ]; then
     LR=$7
