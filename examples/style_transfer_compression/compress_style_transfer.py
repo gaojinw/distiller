@@ -399,7 +399,8 @@ def main():
                 msglogger.info('==> Best Loss: %.3f on Epoch: %d', score.loss, score.epoch)
         apputils.save_checkpoint(epoch, None, model, optimizer, compression_scheduler,
                                  best_epochs[0].loss, is_best, args.name, msglogger.logdir)
-
+STYLE_LOSS_KEY = 'Style Loss'
+CONTENT_LOSS_KEY = 'Content Loss'
 OVERALL_LOSS_KEY = 'Overall Loss'
 OBJECTIVE_LOSS_KEY = 'Objective Loss'
 
@@ -448,6 +449,8 @@ def train(train_loader, model, criterion, optimizer, vgg, epoch, compression_sch
 
         loss = content_loss + style_loss
 
+        losses[STYLE_LOSS_KEY].add(style_loss.item())
+        losses[CONTENT_LOSS_KEY].add(content_loss.item())
         losses[OBJECTIVE_LOSS_KEY].add(loss.item())
 
         if compression_scheduler:
