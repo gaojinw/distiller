@@ -231,7 +231,9 @@ class RandomRankedFilterPruner(RankedFiltersParameterPruner):
     def rank_prune_filters(fraction_to_prune, param, param_name, zeros_mask_dict, model):
         assert param.dim() == 4, "This thresholding is only supported for 4D weights"
         num_filters = param.size(0)
-        num_filters_to_prune = int(fraction_to_prune * num_filters)
+        remaining_filters = int( np.around((1-fraction_to_prune) * num_filters / 4.0) * 4  )
+        num_filters_to_prune = num_filters - remaining_filters
+        # num_filters_to_prune = int(fraction_to_prune * num_filters)
 
         if num_filters_to_prune == 0:
             msglogger.info("Too few filters - can't prune %.1f%% filters", 100*fraction_to_prune)
@@ -257,7 +259,9 @@ class GradientRankedFilterPruner(RankedFiltersParameterPruner):
     def rank_prune_filters(fraction_to_prune, param, param_name, zeros_mask_dict, model):
         assert param.dim() == 4, "This thresholding is only supported for 4D weights"
         num_filters = param.size(0)
-        num_filters_to_prune = int(fraction_to_prune * num_filters)
+        remaining_filters = int( np.around((1-fraction_to_prune) * num_filters / 4.0) * 4   )
+        num_filters_to_prune = num_filters - remaining_filters
+        # num_filters_to_prune = int(fraction_to_prune * num_filters)
         if num_filters_to_prune == 0:
             msglogger.info("Too few filters - can't prune %.1f%% filters", 100*fraction_to_prune)
             return
