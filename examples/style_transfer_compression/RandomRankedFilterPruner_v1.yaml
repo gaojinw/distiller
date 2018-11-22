@@ -1,0 +1,104 @@
+#
+# This schedule performs filter ranking and removal, for the convolution layers in ResNet56-CIFAR, as described in
+# Pruning Filters for Efficient Convnets, H. Li, A. Kadav, I. Durdanovic, H. Samet, and H. P. Graf.
+# ICLR 2017, arXiv:1608.087
+#
+# Filters are ranked and pruned accordingly.
+# This is followed by network thinning which removes the filters entirely from the model, and changes the convolution
+# layers' dimensions accordingly.  Convolution layers that follow have their respective channels removed as well, as do
+# Batch normailization layers.
+#
+# The authors write that: "Since there is no projection mapping for choosing the identity featuremaps, we only
+# consider pruning the first layer of the residual block."
+#
+# Note that to use the command-line below, you will need the baseline ResNet56 model (checkpoint.resnet56_cifar_baseline.pth.tar).
+# You may either train this model from scratch, or download it from the link below.
+# https://s3-us-west-1.amazonaws.com/nndistiller/pruning_filters_for_efficient_convnets/checkpoint.resnet56_cifar_baseline.pth.tar
+#
+# time python3 compress_classifier.py -a=resnet56_cifar -p=50 ../../../data.cifar10 --epochs=70 --lr=0.1 --compress=../pruning_filters_for_efficient_convnets/resnet56_cifar_filter_rank.yaml --resume=checkpoint.resnet56_cifar_baseline.pth.tar -j=1 --deterministic
+#
+# Results: 53.9% (1.85x) of the original convolution MACs (when calculated using direct convolution)
+#
+# Baseline results:
+#     Top1: 92.850    Top5: 99.780    Loss: 0.464
+#     Parameters: 851,504
+#     Total MACs: 125,747,840
+#
+# Results:
+#     Top1: 92.740    Top5: 99.640    Loss: 1.534
+#     Parameters: 570,704  (= 33% sparse )
+#     Total MACs: 67,797,632 (=1.85x less MACs)
+#
+# --- validate (epoch=249)-----------
+# 5000 samples (256 per mini-batch)
+# ==> Top1: 92.180    Top5: 99.660    Loss: 1.540
+#
+# ==> Best Top1: 92.580   On Epoch: 238
+#
+# Saving checkpoint to: logs/2018.10.16-103816/checkpoint.pth.tar
+# --- test ---------------------
+# 10000 samples (256 per mini-batch)
+# ==> Top1: 92.740    Top5: 99.640    Loss: 1.534
+#
+#
+# Log file for this run: /home/cvds_lab/nzmora/pytorch_workspace/distiller/examples/classifier_compression/logs/2018.10.16-103816/2018.10.16-103816.log
+#
+# real    29m38.833s
+# user    65m54.241s
+# sys     6m17.564s
+
+
+version: 1
+pruners:
+  filter_pruner:
+    class: 'RandomRankedFilterPruner'
+    reg_regims:
+      'conv1.conv2d.weight': [0.2, '3D']
+      'conv2.conv2d.weight': [0.2, '3D']
+      'conv3.conv2d.weight': [0.25, '3D']
+
+      'res1.conv1.conv2d.weight': [0.25, '3D']
+      'res1.conv2.conv2d.weight': [0.25, '3D']
+      'res2.conv1.conv2d.weight': [0.25, '3D']
+      'res2.conv2.conv2d.weight': [0.25, '3D']
+      'res3.conv1.conv2d.weight': [0.25, '3D']
+      'res3.conv2.conv2d.weight': [0.25, '3D']
+      'res4.conv1.conv2d.weight': [0.25, '3D']
+      'res4.conv2.conv2d.weight': [0.25, '3D']
+      'res5.conv1.conv2d.weight': [0.25, '3D']
+      'res5.conv2.conv2d.weight': [0.25, '3D']
+
+      'deconv1.conv2d.weight': [0.2, '3D']
+      'deconv2.conv2d.weight': [0.2, '3D']
+      # 'deconv3.conv2d.weight': [0.6, '3D']
+
+extensions:
+  net_thinner:
+      class: 'FilterRemover'
+      thinning_func_str: remove_filters
+      arch: 'resnet56_cifar'
+      dataset: 256
+      # arch: 'resnet56_cifar'
+      # dataset: 'cifar10'
+
+#lr_schedulers:
+#  training_lr:
+#      class: StepLR
+#      step_size: 2
+#      gamma: 0.10
+
+
+policies:
+  - pruner:
+      instance_name: filter_pruner
+    epochs: [3, 6, 9]
+
+  - extension:
+      instance_name: net_thinner
+    epochs: [3, 6, 9]
+
+#  - lr_scheduler:
+#      instance_name: training_lr
+#    starting_epoch: 0 
+#    ending_epoch: 4
+#    frequency: 1
