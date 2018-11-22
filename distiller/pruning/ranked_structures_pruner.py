@@ -253,7 +253,7 @@ class GradientRankedFilterPruner(RankedFiltersParameterPruner):
     """
     """
     def __init__(self, name, reg_regims):
-        super(RandomRankedFilterPruner, self).__init__(name, reg_regims)
+        super(GradientRankedFilterPruner, self).__init__(name, reg_regims)
 
     @staticmethod
     def rank_prune_filters(fraction_to_prune, param, param_name, zeros_mask_dict, model):

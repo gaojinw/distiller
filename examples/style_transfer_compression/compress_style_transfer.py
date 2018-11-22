@@ -25,6 +25,7 @@ except ImportError:
 import apputils
 from distiller.data_loggers import *
 import distiller.quantization as quantization
+import distiller.pruning as pruners
 from models import ALL_MODEL_NAMES, create_model
 
 from torch.utils.data import DataLoader
@@ -365,6 +366,10 @@ def main():
     for epoch in range(start_epoch, start_epoch + args.epochs):
         # This is the main training loop.
         msglogger.info('\n')
+        for policy in compression_scheduler.policies[epoch]:
+            if hasattr(policy, 'pruner') and isinstance(policy.pruner, pruners.GradientRankedFilterPruner):
+                warmup(val_loader, model, criterion, optimizer, vgg, gram_style, args.content_weight, args.style_weight)
+
         if compression_scheduler:
             compression_scheduler.on_epoch_begin(epoch)
 
@@ -614,6 +619,57 @@ def _validate(data_loader, model, criterion, vgg, loggers, args, gram_style, epo
         total_top1, total_top5, losses_exits_stats = earlyexit_validate_stats(args)
         return total_top1, total_top5, losses_exits_stats[args.num_exits-1]
 
+
+def warmup(data_loader, model, criterion, optimizer, vgg, gram_style, content_weight, style_weight):
+    batch_time = tnt.AverageValueMeter()
+    total_samples = len(data_loader.sampler)
+    batch_size = data_loader.batch_size
+    steps_per_epoch = math.ceil(total_samples / batch_size)
+    msglogger.info('Warmup: %d samples (%d per mini-batch)', total_samples, batch_size)
+
+    # Switch to train mode
+    model.train()
+    
+    # clean the gradients
+    optimizer.zero_grad()
+
+    for name, layer in model.named_parameters():
+        if name == 'conv1.conv2d.weight':
+            msglogger.info('Entering Warm up state:')
+            if layer.grad is not None:
+                msglogger.info(layer.grad[:,0,0,0])
+
+    for train_step, (x, _) in enumerate(data_loader):
+        n_batch = len(x)
+
+        x = x.to('cuda')
+        y = model(x)
+
+        y = utils.normalize_batch(y)
+        x = utils.normalize_batch(x)
+
+        features_y = vgg(y)
+        features_x = vgg(x)
+
+        content_loss = content_weight * criterion(features_y.relu2_2, features_x.relu2_2)
+
+        style_loss = 0.
+        for ft_y, gm_s in zip(features_y, gram_style):
+            gm_y = utils.gram_matrix(ft_y)
+            style_loss += criterion(gm_y, gm_s[:n_batch, :, :])
+        style_loss *= style_weight
+
+        loss = content_loss + style_loss
+
+        # Compute the gradient and do SGD step
+        # optimizer.zero_grad()
+        loss.backward()
+        # optimizer.step()
+
+    for name, layer in model.named_parameters():
+        if name == 'conv1.conv2d.weight':
+            msglogger.info('Exiting Warm up state:')
+            msglogger.info(layer.grad[:,0,0,0])
 
 if __name__ == '__main__':
     try:
