@@ -132,6 +132,9 @@ parser.add_argument('--compress', dest='compress', type=str, nargs='?', action='
                     help='configuration file for pruning the model (default is to use hard-coded schedule)')
 parser.add_argument('--sense', dest='sensitivity', choices=['element', 'filter', 'channel'],
                     help='test the sensitivity of layers to pruning')
+parser.add_argument('--sense-range', dest='sensitivity_range', type=float, nargs=3, default=[0.0, 0.95, 0.05],
+                    help='an optional paramaeter for sensitivity testing providing the range of sparsities to test.\n'
+                    'This is equaivalent to creating sensitivities = np.arange(start, stop, step)')
 parser.add_argument('--extras', default=None, type=str,
                     help='file with extra configuration information')
 parser.add_argument('--deterministic', '--det', action='store_true',
@@ -154,7 +157,7 @@ parser.add_argument('--num-best-scores', dest='num_best_scores', default=1, type
                     help='number of best scores to track and report (default: 1)')
 parser.add_argument('--load-serialized', dest='load_serialized', action='store_true', default=False,
                     help='Load a model without DataParallel wrapping it')
-                    
+
 quant_group = parser.add_argument_group('Arguments controlling quantization at evaluation time'
                                         '("post-training quantization)')
 quant_group.add_argument('--quantize-eval', '--qe', action='store_true',
@@ -212,13 +215,14 @@ def create_activation_stats_collectors(model, collection_phase):
     activations_collectors = {"train": missingdict(), "valid": missingdict(), "test": missingdict()}
     if collection_phase is None:
         return activations_collectors
-    collectors = missingdict()
-    collectors["sparsity"] = SummaryActivationStatsCollector(model, "sparsity", distiller.utils.sparsity)
-    collectors["l1_channels"] = SummaryActivationStatsCollector(model, "l1_channels",
-                                                                distiller.utils.activation_channels_l1)
-    collectors["apoz_channels"] = SummaryActivationStatsCollector(model, "apoz_channels",
-                                                                  distiller.utils.activation_channels_apoz)
-    collectors["records"] = RecordsActivationStatsCollector(model, classes=[torch.nn.Conv2d])
+    collectors = missingdict({
+        "sparsity":      SummaryActivationStatsCollector(model, "sparsity",
+                                                         lambda t: 100 * distiller.utils.sparsity(t)),
+        "l1_channels":   SummaryActivationStatsCollector(model, "l1_channels",
+                                                         distiller.utils.activation_channels_l1),
+        "apoz_channels": SummaryActivationStatsCollector(model, "apoz_channels",
+                                                         distiller.utils.activation_channels_apoz),
+        "records":       RecordsActivationStatsCollector(model, classes=[torch.nn.Conv2d])})
     activations_collectors[collection_phase] = collectors
     return activations_collectors
 
@@ -227,7 +231,9 @@ def save_collectors_data(collectors, directory):
     """Utility function that saves all activation statistics to Excel workbooks
     """
     for name, collector in collectors.items():
-        collector.to_xlsx(os.path.join(directory, name))
+        workbook = os.path.join(directory, name)
+        msglogger.info("Generating {}".format(workbook))
+        collector.to_xlsx(workbook)
 
 
 def main():
@@ -335,7 +341,8 @@ def main():
     activations_collectors = create_activation_stats_collectors(model, collection_phase=args.activation_stats)
 
     if args.sensitivity is not None:
-        return sensitivity_analysis(model, criterion, test_loader, pylogger, args)
+        sensitivities = np.arange(args.sensitivity_range[0], args.sensitivity_range[1], args.sensitivity_range[2])
+        return sensitivity_analysis(model, criterion, test_loader, pylogger, args, sensitivities)
 
     if args.evaluate:
         return evaluate_model(model, criterion, test_loader, pylogger, activations_collectors, args)
@@ -343,10 +350,10 @@ def main():
     if args.compress:
         # The main use-case for this sample application is CNN compression. Compression
         # requires a compression schedule configuration file in YAML.
-        compression_scheduler = distiller.file_config(model, optimizer, args.compress)
+        compression_scheduler = distiller.file_config(model, optimizer, args.compress, compression_scheduler)
         # Model is re-transferred to GPU in case parameters were added (e.g. PACTQuantizer)
         model.cuda()
-    else:
+    elif compression_scheduler is None:
         compression_scheduler = distiller.CompressionScheduler(model)
 
     args.kd_policy = None
@@ -399,19 +406,18 @@ def main():
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
-        # remember best top1 and save checkpoint
-        #sparsity = distiller.model_sparsity(model)
-        is_best = top1 > best_epochs[0].top1
-        if is_best:
+        # Update the list of top scores achieved so far, and save the checkpoint
+        is_best = top1 > best_epochs[-1].top1
+        if top1 > best_epochs[0].top1:
             best_epochs[0].epoch = epoch
             best_epochs[0].top1 = top1
-            #best_epoch.sparsity = sparsity
+            # Keep best_epochs sorted such that best_epochs[0] is the lowest top1 in the best_epochs list
             best_epochs = sorted(best_epochs, key=lambda score: score.top1)
         for score in reversed(best_epochs):
             if score.top1 > 0:
                 msglogger.info('==> Best Top1: %.3f on Epoch: %d', score.top1, score.epoch)
         apputils.save_checkpoint(epoch, args.arch, model, optimizer, compression_scheduler,
-                                 best_epochs[0].top1, is_best, args.name, msglogger.logdir)
+                                 best_epochs[-1].top1, is_best, args.name, msglogger.logdir)
 
     # Finally run results on the test set
     test(test_loader, model, criterion, [pylogger], activations_collectors, args=args)
@@ -539,6 +545,7 @@ def test(test_loader, model, criterion, loggers, activations_collectors, args):
     with collectors_context(activations_collectors["test"]) as collectors:
         top1, top5, lossses = _validate(test_loader, model, criterion, loggers, args)
         distiller.log_activation_statsitics(-1, "test", loggers, collector=collectors['sparsity'])
+        save_collectors_data(collectors, msglogger.logdir)
     return top1, top5, lossses
 
 
@@ -732,7 +739,7 @@ def summarize_model(model, dataset, which_summary):
         distiller.model_summary(model, which_summary, dataset)
 
 
-def sensitivity_analysis(model, criterion, data_loader, loggers, args):
+def sensitivity_analysis(model, criterion, data_loader, loggers, args, sparsities):
     # This sample application can be invoked to execute Sensitivity Analysis on your
     # model.  The ouptut is saved to CSV and PNG.
     msglogger.info("Running sensitivity tests")
@@ -744,7 +751,7 @@ def sensitivity_analysis(model, criterion, data_loader, loggers, args):
     which_params = [param_name for param_name, _ in model.named_parameters()]
     sensitivity = distiller.perform_sensitivity_analysis(model,
                                                          net_params=which_params,
-                                                         sparsities=np.arange(0.0, 0.95, 0.05),
+                                                         sparsities=sparsities,
                                                          test_func=test_fnc,
                                                          group=args.sensitivity)
     distiller.sensitivities_to_png(sensitivity, 'sensitivity.png')
