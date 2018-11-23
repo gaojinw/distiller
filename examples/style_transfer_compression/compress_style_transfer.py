@@ -92,6 +92,9 @@ parser.add_argument('--compress', dest='compress', type=str, nargs='?', action='
                     help='configuration file for pruning the model (default is to use hard-coded schedule)')
 parser.add_argument('--sense', dest='sensitivity', choices=['element', 'filter', 'channel'],
                     help='test the sensitivity of layers to pruning')
+parser.add_argument('--sense-range', dest='sensitivity_range', type=float, nargs=3, default=[0.0, 0.95, 0.05],
+                    help='an optional paramaeter for sensitivity testing providing the range of sparsities to test.\n'
+                    'This is equaivalent to creating sensitivities = np.arange(start, stop, step)')
 parser.add_argument('--extras', default=None, type=str,
                     help='file with extra configuration information')
 parser.add_argument('--deterministic', '--det', action='store_true',
@@ -182,13 +185,14 @@ def create_activation_stats_collectors(model, collection_phase):
     activations_collectors = {"train": missingdict(), "valid": missingdict(), "test": missingdict()}
     if collection_phase is None:
         return activations_collectors
-    collectors = missingdict()
-    collectors["sparsity"] = SummaryActivationStatsCollector(model, "sparsity", distiller.utils.sparsity)
-    collectors["l1_channels"] = SummaryActivationStatsCollector(model, "l1_channels",
-                                                                distiller.utils.activation_channels_l1)
-    collectors["apoz_channels"] = SummaryActivationStatsCollector(model, "apoz_channels",
-                                                                  distiller.utils.activation_channels_apoz)
-    collectors["records"] = RecordsActivationStatsCollector(model, classes=[torch.nn.Conv2d])
+    collectors = missingdict({
+        "sparsity":      SummaryActivationStatsCollector(model, "sparsity",
+                                                         lambda t: 100 * distiller.utils.sparsity(t)),
+        "l1_channels":   SummaryActivationStatsCollector(model, "l1_channels",
+                                                         distiller.utils.activation_channels_l1),
+        "apoz_channels": SummaryActivationStatsCollector(model, "apoz_channels",
+                                                         distiller.utils.activation_channels_apoz),
+        "records":       RecordsActivationStatsCollector(model, classes=[torch.nn.Conv2d])})
     activations_collectors[collection_phase] = collectors
     return activations_collectors
 
@@ -197,7 +201,9 @@ def save_collectors_data(collectors, directory):
     """Utility function that saves all activation statistics to Excel workbooks
     """
     for name, collector in collectors.items():
-        collector.to_xlsx(os.path.join(directory, name))
+        workbook = os.path.join(directory, name)
+        msglogger.info("Generating {}".format(workbook))
+        collector.to_xlsx(workbook)
 
 
 def main():
@@ -332,7 +338,8 @@ def main():
     activations_collectors = create_activation_stats_collectors(model, collection_phase=args.activation_stats)
 
     if args.sensitivity is not None:
-        return sensitivity_analysis(model, criterion, test_loader, pylogger, args)
+        sensitivities = np.arange(args.sensitivity_range[0], args.sensitivity_range[1], args.sensitivity_range[2])
+        return sensitivity_analysis(model, criterion, test_loader, pylogger, args, sensitivities)
 
     if args.evaluate:
         return evaluate_model(model, criterion, test_loader, pylogger, activations_collectors, args)
@@ -340,10 +347,10 @@ def main():
     if args.compress:
         # The main use-case for this sample application is CNN compression. Compression
         # requires a compression schedule configuration file in YAML.
-        compression_scheduler = distiller.file_config(model, optimizer, args.compress)
+        compression_scheduler = distiller.file_config(model, optimizer, args.compress, compression_scheduler)
         # Model is re-transferred to GPU in case parameters were added (e.g. PACTQuantizer)
         model.cuda()
-    else:
+    elif compression_scheduler is None:
         compression_scheduler = distiller.CompressionScheduler(model)
 
     args.kd_policy = None
@@ -396,13 +403,13 @@ def main():
         if compression_scheduler:
             compression_scheduler.on_epoch_end(epoch, optimizer)
 
-        # remember best top1 and save checkpoint
-        #sparsity = distiller.model_sparsity(model)
+        # Update the list of top scores achieved so far, and save the checkpoint
         is_best = vloss < best_epochs[0].loss
-        if is_best:
-            best_epochs[0].epoch = epoch
-            best_epochs[0].loss = vloss
-            best_epochs = sorted(best_epochs, key=lambda score: score.loss, reverse=True)
+        if vloss < best_epochs[-1].loss:
+            best_epochs[-1].epoch = epoch
+            best_epochs[-1].loss = vloss
+            # Keep best_epochs sorted such that best_epochs[0] is the lowest loss in the best_epochs list
+            best_epochs = sorted(best_epochs, key=lambda score: score.loss)
         for score in reversed(best_epochs):
             if score.loss > 0:
                 msglogger.info('==> Best Loss: %.3f on Epoch: %d', score.loss, score.epoch)
