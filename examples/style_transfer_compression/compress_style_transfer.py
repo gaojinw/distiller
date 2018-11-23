@@ -366,9 +366,12 @@ def main():
     for epoch in range(start_epoch, start_epoch + args.epochs):
         # This is the main training loop.
         msglogger.info('\n')
-        for policy in compression_scheduler.policies[epoch]:
-            if hasattr(policy, 'pruner') and isinstance(policy.pruner, pruners.GradientRankedFilterPruner):
-                warmup(val_loader, model, criterion, optimizer, vgg, gram_style, args.content_weight, args.style_weight)
+        
+        if epoch in compression_scheduler.policies:
+            for policy in compression_scheduler.policies[epoch]:
+                if hasattr(policy, 'pruner'):
+                    if isinstance(policy.pruner, pruners.GradientRankedFilterPruner):
+                        warmup(val_loader, model, criterion, optimizer, vgg, gram_style, args.content_weight, args.style_weight)
 
         if compression_scheduler:
             compression_scheduler.on_epoch_begin(epoch)
